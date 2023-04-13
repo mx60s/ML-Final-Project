@@ -1,4 +1,5 @@
 -i https://pypi.org/simple
+cebra==0.1.0; python_version >= '3.8'
 certifi==2022.12.7; python_version >= '3.6'
 charset-normalizer==2.1.1; python_full_version >= '3.6.0'
 contourpy==1.0.6; python_full_version >= '3.7.0'

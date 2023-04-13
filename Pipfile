@@ -11,6 +11,9 @@ matplotlib = "*"
 scikit-learn = "*"
 torchmetrics = "*"
 pandas = "*"
+cebra = "*"
+keras = "*"
+joblib = "*"
 
 [dev-packages]
 
