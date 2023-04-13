@@ -29,42 +29,7 @@ def CIiVAE(dim_x, dim_u,
                             final_activation=decoder_final_activation)
     return [prior, encoder, decoder]
 
-# TODO remove 
-"""
-def CIiVAE(nn.Module):
-    def __init__(ConvPiVAE, self, dim_x, dim_u, 
-            dim_z=16, prior_node_list=[128, 128],
-            encoder_node_list=[4096, 4096],
-            decoder_node_list=[4096, 4096],
-            decoder_final_activation='sigmoid'):
-        '''
-        dim_z: dimension of representations
-        prior_node_list: list of number of nodes in layers in label prior networks
-        encoder_node_list: list of number of nodes in layers in encoder networks
-        decoder_node_list: list of number of nodes in layers in decoder networks
-        decoder_final_activation: the last activation layer in decoder. Please choose 'sigmoid' or 'None' 
-        '''
-        
-        super(ConvPiVAE, self).__init__()
-        
-        self.prior = Prior_conti(dim_z, dim_u, prior_node_list)
-        self.encoder = Encoder(dim_x, dim_z, encoder_node_list)
-        self.decoder = Decoder(dim_z, dim_x, decoder_node_list,
-                               final_activation=decoder_final_activation)
-        
-    def forward(self, x, u):
-        lam_mean, lam_log_var = self.prior(u)
-        z_mean, z_log_var = self.encoder(x)
-        post_mean, post_log_var = util.compute_posterior(z_mean, z_log_var, lam_mean, lam_log_var)
-        post_sample = util.sampling(post_mean, post_log_var)
-        encoded_sample = util.sampling(z_mean, z_log_var)
-        
-        fire_rate_post, obs_log_var = self.decoder(post_sample)
-            fire_rate_encoded, _ = self.decoder(encoded_sample)
-            
-        return post_sample, encoded_sample, fire_rate_post, 
-                obs_log_var, fire_rate_encoded
-"""
+
 # encoder changed to the cebra one, decoder changed to 2d output
 # not sure what that means for the output
 def ConvCIiVAE(dim_x, dim_u,
@@ -111,8 +76,6 @@ class Prior_conti(nn.Module):
                 self.log_var_net.append(nn.Linear(self.prior_node_list[i],
                                                   self.prior_node_list[i+1]))
                 self.log_var_net.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
-                
-            del(i)
             
         self.mu_net.append(nn.Linear(self.prior_node_list[-1], self.dim_z))
         self.log_var_net.append(nn.Linear(self.prior_node_list[-1], self.dim_z))
@@ -123,7 +86,7 @@ class Prior_conti(nn.Module):
             for i in range(len(self.mu_net)-1):
                 h_mu = self.mu_net[i+1](h_mu)
                 h_log_var = self.log_var_net[i+1](h_log_var)
-            del(i)
+
         return h_mu, h_log_var
 
     
@@ -132,7 +95,7 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         
         self.dim_x, self.dim_z = dim_x, dim_z
-        self.encoder_node_list = encoder_node_list
+        self.encoder_node_list = encoder_node_list # hidden dims
         
         self.main = nn.ModuleList()
         
@@ -145,8 +108,7 @@ class Encoder(nn.Module):
                 self.main.append(nn.Linear(self.encoder_node_list[i],
                                           self.encoder_node_list[i+1]))
                 self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
-            del(i)
-        
+
         # input dimension is gen_nodes
         self.mu_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
         self.log_var_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
@@ -157,48 +119,55 @@ class Encoder(nn.Module):
         if len(self.main) > 1:
             for i in range(len(self.main)-1):
                 h = self.main[i+1](h)
-                
-            del(i)
-            
+
         mu, log_var = self.mu_net(h), self.log_var_net(h)
         
         return mu, log_var
     
 # receptive field of 10 samples
+# For the model with receptive field of 10, a convolutional network with five time convolutional layers was used. The first layer had kernel size 2, the next three layers had kernel size 3 and used skip connections. The final layer had kernel size 3 and mapped the hidden dimensions to the output dimension.
 class CebraConvEncoder(nn.Module):
-    def __init__(self, dim_x, dim_z, encoder_node_list):
+    def __init__(self, dim_x, dim_z, hid_dim):
         super(Encoder, self).__init__()
-        
         self.dim_x, self.dim_z = dim_x, dim_z
-        self.encoder_node_list = encoder_node_list
+        self.hid_dim = hid_dim
         
-        self.main = nn.ModuleList()
-
-        self.main.append(nn.Linear(self.dim_x, self.encoder_node_list[0]))
-        self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
+        self.conv1 = nn.Conv2d(
+            in_channels=dim_z, out_channels=hid_dim, kernel_size=2)
+        self.conv2 = nn.Conv2d(
+            in_channels=hid_dim, out_channels=hid_dim, kernel_size=3)
+        self.conv3 = nn.Conv2d(
+            in_channels=hid_dim, out_channels=hid_dim, kernel_size=3)
+        self.conv4 = nn.Conv2d(
+            in_channels=hid_dim, out_channels=hid_dim, kernel_size=3)
         
-        if len(self.encoder_node_list) > 1:
-            for i in range(len(self.encoder_node_list)-1):
-                self.main.append(nn.Linear(self.encoder_node_list[i],
-                                          self.encoder_node_list[i+1]))
-                self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
-                
-            del(i)
+        self.conv_mu = nn.Conv2d(
+            in_channels=hid_dim, out_channels=dim_z, kernel_size=3)
+        self.conv_log_var = nn.Conv2d(
+            in_channels=hid_dim, out_channels=dim_z, kernel_size=3)
         
-        # input dimension is gen_nodes
-        self.mu_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
-        self.log_var_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
+        self.bn_mu = nn.BatchNorm2d(num_features=dim_z)
+        self.bn_log_var = nn.BatchNorm2d(num_features=dim_z)
+        
+        self.gelu =  nn.GELU()
     
-    def forward(self, x_input):
-        h = self.main[0](x_input)
+    def forward(self, x):
+        ident = x
         
-        if len(self.main) > 1:
-            for i in range(len(self.main)-1):
-                h = self.main[i+1](h)
-                
-            del(i)
+        x = self.conv1(x)
+        
+        x = self.conv2(x)
+        x += ident # skip connections before or after?
+        x = self.conv3(x)
+        x += ident
+        x = self.conv4(x)
+        x += ident
             
-        mu, log_var = self.mu_net(h), self.log_var_net(h)
+        mu, log_var = self.conv_mu(x), self.conv_log_var(x) # not sure if correct
+        
+        # this unless MSE is used: need to check
+        mu = self.bn_mu(mu)
+        log_var = self.bn_log_var(log_var)
         
         return mu, log_var
         
@@ -221,8 +190,6 @@ class Decoder(nn.Module):
                 self.main.append(nn.Linear(self.decoder_node_list[i],
                                           self.decoder_node_list[i+1]))
                 self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
-                
-            del(i)
         
         # input dimension is gen_nodes
         if final_activation == 'sigmoid':
@@ -243,9 +210,7 @@ class Decoder(nn.Module):
         if len(self.main) > 1:
             for i in range(len(self.main)-1):
                 h = self.main[i+1](h)
-                
-            del(i)
-            
+
         o = self.mu_net(h)
         
         device = z_input.get_device()
