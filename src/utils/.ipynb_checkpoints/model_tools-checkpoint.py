@@ -11,7 +11,6 @@ from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from torchvision import datasets, transforms
 from sklearn.preprocessing import OneHotEncoder
-import progressbar
 import tqdm
 
 import utils.nets as nets

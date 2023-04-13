@@ -32,9 +32,8 @@ def CIiVAE(dim_x, dim_u,
 
 # encoder changed to the cebra one, decoder changed to 2d output
 # not sure what that means for the output
-def ConvCIiVAE(dim_x, dim_u,
+def ConvCIiVAE(dim_x, dim_u, hid_dim,
           dim_z=16, prior_node_list=[128, 128],
-          encoder_node_list=[4096, 4096],
           decoder_node_list=[4096, 4096],
           decoder_final_activation='sigmoid'):
     '''
@@ -46,7 +45,7 @@ def ConvCIiVAE(dim_x, dim_u,
     '''
     
     prior = Prior_conti(dim_z, dim_u, prior_node_list)
-    encoder = Encoder(dim_x, dim_z, encoder_node_list)
+    encoder = CebraConvEncoder(dim_x, dim_z, hid_dim)
     decoder = Decoder(dim_z, dim_x, decoder_node_list,
                             final_activation=decoder_final_activation)
     return [prior, encoder, decoder]
@@ -128,7 +127,7 @@ class Encoder(nn.Module):
 # For the model with receptive field of 10, a convolutional network with five time convolutional layers was used. The first layer had kernel size 2, the next three layers had kernel size 3 and used skip connections. The final layer had kernel size 3 and mapped the hidden dimensions to the output dimension.
 class CebraConvEncoder(nn.Module):
     def __init__(self, dim_x, dim_z, hid_dim):
-        super(Encoder, self).__init__()
+        super(CebraConvEncoder, self).__init__()
         self.dim_x, self.dim_z = dim_x, dim_z
         self.hid_dim = hid_dim
         
@@ -146,6 +145,7 @@ class CebraConvEncoder(nn.Module):
         self.conv_log_var = nn.Conv2d(
             in_channels=hid_dim, out_channels=dim_z, kernel_size=3)
         
+        # only use if not MSE
         self.bn_mu = nn.BatchNorm2d(num_features=dim_z)
         self.bn_log_var = nn.BatchNorm2d(num_features=dim_z)
         
@@ -166,8 +166,8 @@ class CebraConvEncoder(nn.Module):
         mu, log_var = self.conv_mu(x), self.conv_log_var(x) # not sure if correct
         
         # this unless MSE is used: need to check
-        mu = self.bn_mu(mu)
-        log_var = self.bn_log_var(log_var)
+        #mu = self.bn_mu(mu)
+        #log_var = self.bn_log_var(log_var)
         
         return mu, log_var
         

@@ -24,3 +24,27 @@ def kl_criterion(mu1, log_var1, mu2, log_var2):
     sigma2 = log_var2.mul(0.5).exp() 
     kld = torch.log(sigma2/sigma1) + (torch.exp(log_var1) + (mu1 - mu2)**2)/(2*torch.exp(log_var2)) - 1/2
     return torch.mean(kld, dim=-1)
+
+def extract_feature(result_path, x):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    saved_model = torch.load('%s/model.pth' % result_path)
+    prior, encoder, decoder = saved_model['prior'], saved_model['encoder'], saved_model['decoder']
+    prior.eval(); encoder.eval(); decoder.eval()
+    
+    if device == 'cuda':
+        z_mean, z_log_var = encoder(x.cuda())
+    elif device == 'cpu':
+        z_mean, z_log_var = encoder(x)
+    z_sample = UTIL.sampling(z_mean, z_log_var)
+    return z_sample
+
+def generate_z(result_path, u):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    saved_model = torch.load('%s/model.pth' % result_path)
+    prior, encoder, decoder = saved_model['prior'], saved_model['encoder'], saved_model['decoder']
+    prior.eval(); encoder.eval(); decoder.eval()
+    
+    u = u.cuda() if device == 'cuda' else u
+    z_mean, z_log_var = prior(u.cuda())
+    return z_mean, z_log_var
+    
