@@ -9,4 +9,4 @@ services:
       - 8888:8888
     #environment:
     volumes:
-      - ./src:/home/jovyan/work
+      - ./:/home/jovyan/work
