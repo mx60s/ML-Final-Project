@@ -43,10 +43,11 @@ def CIiVAE(dim_x, dim_u,
 
 # encoder changed to the cebra one, decoder changed to 2d output
 # not sure what that means for the output
-def ConvCIiVAE(dim_x, dim_u, hid_dim,
-          dim_z=16, prior_node_list=[128, 128],
-          decoder_node_list=[4096, 4096],
-          decoder_final_activation='sigmoid'):
+def ConvCIiVAE(dim_x, dim_u,
+          dim_z=16,
+          decoder_final_activation='sigmoid',
+          time_window=10,
+          gen_nodes=60):
     '''
     dim_z: dimension of representations
     prior_node_list: list of number of nodes in layers in label prior networks
@@ -55,10 +56,9 @@ def ConvCIiVAE(dim_x, dim_u, hid_dim,
     decoder_final_activation: the last activation layer in decoder. Please choose 'sigmoid' or 'None' 
     '''
     
-    prior = Prior_conti(dim_z, dim_u, prior_node_list)
-    encoder = CebraConvEncoder(dim_x, dim_z, hid_dim)
-    decoder = Decoder(dim_z, dim_x, decoder_node_list,
-                            final_activation=decoder_final_activation)
+    prior = Prior_conti(dim_z, dim_u)
+    encoder = CebraConvEncoder(dim_x, dim_z, time_window)
+    decoder = Decoder(dim_z, dim_x, final_activation=decoder_final_activation)
     return [prior, encoder, decoder]
 
 def fit(model, x_train, u_train, x_val, u_val,
@@ -422,7 +422,7 @@ def fit(model, x_train, u_train, x_val, u_val,
 
 
 class Prior_conti(nn.Module):
-    def __init__(self, dim_z, dim_u, prior_node_list):
+    def __init__(self, dim_z, dim_u, prior_node_list=[128,128]):
         super(Prior_conti, self).__init__()
         
         self.dim_z, self.dim_u = dim_z, dim_u
@@ -495,14 +495,18 @@ class Encoder(nn.Module):
     
 # receptive field of 10 samples
 # For the model with receptive field of 10, a convolutional network with five time convolutional layers was used. The first layer had kernel size 2, the next three layers had kernel size 3 and used skip connections. The final layer had kernel size 3 and mapped the hidden dimensions to the output dimension.
+
+# so input is of size (10, 120); output of (2,) each
+# how does that get rid of the 10
 class CebraConvEncoder(nn.Module):
-    def __init__(self, dim_x, dim_z, hid_dim):
+    def __init__(self, dim_x, dim_z, time_window):
         super(CebraConvEncoder, self).__init__()
         self.dim_x, self.dim_z = dim_x, dim_z
         self.hid_dim = hid_dim
+        self.window = time_window # need?
         
         self.conv1 = nn.Conv2d(
-            in_channels=dim_z, out_channels=hid_dim, kernel_size=2)
+            in_channels=dim_x, out_channels=hid_dim, kernel_size=2)
         self.conv2 = nn.Conv2d(
             in_channels=hid_dim, out_channels=hid_dim, kernel_size=3)
         self.conv3 = nn.Conv2d(
