@@ -14,7 +14,7 @@ pandas = "*"
 cebra = "*"
 keras = "*"
 joblib = "*"
-
+scipy = "*"
 [dev-packages]
 
 [requires]
