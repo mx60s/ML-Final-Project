@@ -35,7 +35,7 @@ def extract_feature(result_path, x):
         z_mean, z_log_var = encoder(x.cuda())
     elif device == 'cpu':
         z_mean, z_log_var = encoder(x)
-    z_sample = UTIL.sampling(z_mean, z_log_var)
+    z_sample = sampling(z_mean, z_log_var)
     return z_sample
 
 def generate_z(result_path, u):
