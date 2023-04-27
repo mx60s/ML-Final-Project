@@ -1,5 +1,23 @@
 import torch
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
+import math
+
+# adapting from https://discuss.pytorch.org/t/1d-gaussian-kernel/160899/2
+# https://stackoverflow.com/questions/3149279/optimal-sigma-for-gaussian-filtering-of-an-image
+# sigma=(k-1)/6
+# TODO make sure that this makes any sense lol
+# kernel should be shape [120,120,10]
+def gaussian_conv(x, sigma, device='cpu'):
+    # not sure if it should be an arange or just ones or what. can't find anything on that.
+    #weights = torch.arange(1, 11, dtype=torch.float, device=x.device)
+    #weights = torch.unsqueeze(weights, 0)
+    #weights = torch.unsqueeze(weights, 2)
+
+    weights = torch.ones(1, 10, 1)
+    kernel = gaussian_filter1d(weights, sigma)
+    
+    return torch.nn.functional.conv1d(x, torch.from_numpy(kernel).to(device))
 
 def compute_posterior(z_mean, z_log_var, lam_mean, lam_log_var):
     # q(z) = q(z|x)p(z|u) = N((mu1*var2+mu2*var1)/(var1+var2), var1*var2/(var1+var2));

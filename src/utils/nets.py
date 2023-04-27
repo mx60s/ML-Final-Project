@@ -1,4 +1,3 @@
-
 import numpy as np
 import datetime
 import pandas as pd
@@ -15,10 +14,8 @@ from sklearn.preprocessing import OneHotEncoder
 # import progressbar
 import tqdm
 
-
-import utils.ciivae_etc as util
-
-# TODO: need to implement a piVAE/conv-piVAE for tests?
+import utils.ciivae_etc as UTIL
+from scipy.ndimage import gaussian_filter1d
 
 # NOTE: their models are lists of modules (which are optimized seperately in train) instead of actual Pytorch models. We're ollowing that convention for now.
 # Code taken from CI-iVAE repo
@@ -63,16 +60,50 @@ def ConvCIiVAE(dim_x, dim_u,
     decoder = Decoder(dim_z, dim_x, final_activation=decoder_final_activation)
     return [prior, encoder, decoder]
 
+class Encoder(nn.Module):
+    def __init__(self, dim_x, dim_z, encoder_node_list):
+        super(Encoder, self).__init__()
+        
+        self.dim_x, self.dim_z = dim_x, dim_z
+        self.encoder_node_list = encoder_node_list # hidden dims
+        
+        self.main = nn.ModuleList()
+        
+        # input dimension is dim_x
+        self.main.append(nn.Linear(self.dim_x, self.encoder_node_list[0]))
+        self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
+        
+        if len(self.encoder_node_list) > 1:
+            for i in range(len(self.encoder_node_list)-1):
+                self.main.append(nn.Linear(self.encoder_node_list[i],
+                                          self.encoder_node_list[i+1]))
+                self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
+
+        # input dimension is gen_nodes
+        self.mu_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
+        self.log_var_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
+    
+    def forward(self, x_input):
+        h = self.main[0](x_input)
+        
+        if len(self.main) > 1:
+            for i in range(len(self.main)-1):
+                h = self.main[i+1](h)
+
+        mu, log_var = self.mu_net(h), self.log_var_net(h)
+        
+        return mu, log_var
+
+
 def fit(model, dataloader_dict,
-        num_epoch=100, batch_size=256, num_worker=32, seed=0,
+        num_epoch=100, seed=0,
         beta=0.01, Adam_beta1=0.5, Adam_beta2=0.999, weight_decay=5e-6,
         init_lr=5e-5, lr_milestones=[25, 50, 75], lr_gamma=0.5,
         dtype=torch.float32, M=50, alpha_step=0.025,
-        fix_alpha=None, result_path=None):
+        fix_alpha=None, result_path=None, sigma=0.01, batch_size=200,
+        num_worker=1):
     '''
     num_epoch: the number of epoch
-    batch_size: the number of samples in each mini-batch
-    num_worker: the number of CPU cores
     seed: the random seed number
     beta: the coefficient of KL-penalty term in ELBOs
     Adam_beta1: beta1 for Adam optimizer
@@ -135,38 +166,27 @@ def fit(model, dataloader_dict,
             
     summary_stats = []
     
-    # TODO: this is where ci-vae code makes a dataloader..move it up to the main notebook so it matches pi-vae/cebra
-    
-    '''
-    # define data loader
-    dataloader = {}
-    dataloader['train'] = DataLoader(TensorDataset(x_train, u_train),
-                                     batch_size=batch_size, num_workers=num_worker,
-                                     shuffle=True, drop_last=True)
-    dataloader['val'] = DataLoader(TensorDataset(x_val, u_val),
-                                   batch_size=batch_size, num_workers=num_worker,
-                                   shuffle=True, drop_last=True)
-                                   '''
-    
     # training part
     mse_criterion = torch.nn.MSELoss()
-    if device == 'cuda':
-        prior.cuda()
-        encoder.cuda()
-        decoder.cuda()
-        mse_criterion.cuda()
+    #if device == 'cuda':
+    prior.to(device)
+    encoder.to(device)
+    decoder.to(device)
+    mse_criterion.to(device)
+
     for epoch in range(1, num_epoch+1):
         num_batch = 0
-        for batch, _ in tqdm.tqdm(dataloader_dict['train'],
+        #maggie = 0
+        for x_batch, u_batch in tqdm.tqdm(dataloader_dict['train'],
                                          desc='[Epoch %d/%d] Training' % (epoch, num_epoch)):
-            x_batch = torch.from_numpy(batch[0])
-            u_batch = torch.from_numpy(batch[1])
-            #print('x_batch', x_batch.shape)
-            #print('u_batch', u_batch.shape)
+            #if maggie == 10:
+            #  break
+            #else:
+            #  maggie += 1
             
-            num_batch += 1
-            if device == 'cuda':
-                x_batch, u_batch = x_batch.cuda(), u_batch.cuda()
+            x_batch, u_batch = x_batch.to(device), u_batch.to(device)
+                
+            # why are they adding what I assume to be noise?
             x_batch += torch.randn_like(x_batch)*1e-2
 
             prior.train()
@@ -179,61 +199,43 @@ def fit(model, dataloader_dict,
             # forward step
             lam_mean, lam_log_var = prior(u_batch)
             
+            #print('x_batch sample')
+            #print(x_batch.shape)
             x_batch_reshape = torch.transpose(x_batch, 1, 2)
-            #print(x_batch_reshape.shape)
-            z_mean, z_log_var = encoder(x_batch_reshape)
+            x_batch_fire_rate = torch.squeeze(UTIL.gaussian_conv(x_batch_reshape, sigma, device=device))
+            #print('x_batch_fire_rate shape', x_batch_fire_rate.shape)
+            #print('x_batch_fire_rate sample')
+            #print(x_batch_fire_rate[0][:30])
+            
+            z_mean, z_log_var = encoder(x_batch_fire_rate)
             
             z_mean = torch.squeeze(z_mean)
             z_log_var = torch.squeeze(z_log_var)
-            
-            #print('zmean shape', z_mean.shape)
-            #print('lam mean shape', lam_mean.shape)
-            #zmean shape torch.Size([202, 2])
-            #lam mean shape torch.Size([202, 2])
             
             post_mean, post_log_var = UTIL.compute_posterior(z_mean, z_log_var, lam_mean, lam_log_var)
             post_sample = UTIL.sampling(post_mean, post_log_var)
             encoded_sample = UTIL.sampling(z_mean, z_log_var)
 
-            epsilon = torch.randn((z_mean.shape[0], z_mean.shape[1], M))
-            if device == 'cuda':
-                post_sample = post_sample.cuda()
-                encoded_sample = encoded_sample.cuda()
-                epsilon = epsilon.cuda()
-
-            #print('post_sample', post_sample.shape)
-            # post_sample torch.Size([202, 2])
-            fire_rate_post, obs_log_var = decoder(post_sample)
-            fire_rate_encoded, _ = decoder(encoded_sample)
+            epsilon = torch.randn((z_mean.shape[0], z_mean.shape[1], M), device=device)
+                
+            post_sample = post_sample.to(device)
+            encoded_sample = encoded_sample.to(device)
+                
+            fire_rate_post = decoder(post_sample)
+            fire_rate_encoded = decoder(encoded_sample)
             
-            #fire_rate_post = torch.transpose(fire_rate_post, 1, 2)
-            #fire_rate_encoded = torch.transpose(fire_rate_encoded, 1, 2)
-
-            # pi-vae outs: [post_mean, post_log_var, z_sample (post_sample here), fire_rate (fire_rate_post), lam_mean, lam_log_var, z_mean, z_log_var, obs_log_var]
-            # compute objective function
-            print('fire_rate_post', fire_rate_post.shape) #202, 120, 10
-            print('x_batch', x_batch.shape) # 202, 120, 10
+            obs_loglik_post = -torch.mean((fire_rate_post - x_batch_fire_rate)**2, dim=1)
+            obs_loglik_encoded = -torch.mean((fire_rate_encoded - x_batch_fire_rate)**2, dim=1)
             
-            obs_loglik_post = -torch.mean((fire_rate_post - x_batch)**2, dim=1)
-            obs_loglik_encoded = -torch.mean((fire_rate_encoded - x_batch)**2, dim=1)
-            
-            # lol correct??
-            obs_loglik_encoded = torch.mean(obs_loglik_encoded, dim=1)
+            # TODO remove after debugging
+            #obs_loglik_encoded = torch.mean(obs_loglik_encoded, dim=1)
             #print('obs_loglik_encoded', obs_loglik_encoded.shape)
-            obs_loglik_post = torch.mean(obs_loglik_post, dim=1)
-            #print('obs_loglik_post', obs_loglik_post.shape)
+            #obs_loglik_post = torch.mean(obs_loglik_post, dim=1)
             
-            # all of these are 202,2 when they go in
             kl_post_prior = UTIL.kl_criterion(post_mean, post_log_var, lam_mean, lam_log_var)
             kl_encoded_prior = UTIL.kl_criterion(z_mean, z_log_var, lam_mean, lam_log_var)
             
-            #print('beta_kl_post_prior', beta_kl_post_prior.shape)
-            #print('kl_post_prior', kl_post_prior.shape)
-            #print('obs_loglik_post', obs_loglik_post.shape)
-            # kl_post_prior torch.Size([202])
-            # obs_loglik_post torch.Size([202, 120])
-            
-            elbo_post = obs_loglik_post - beta_kl_post_prior*kl_post_prior # of size 202?
+            elbo_post = obs_loglik_post - beta_kl_post_prior*kl_post_prior
             elbo_encoded = obs_loglik_encoded - beta_kl_encoded_prior*kl_encoded_prior
 
             z_mean_tiled = torch.tile(torch.unsqueeze(z_mean, 2), [1, 1, M])
@@ -251,11 +253,10 @@ def fit(model, dataloader_dict,
 
             if fix_alpha is not None:
                 if fix_alpha == 0.0:
-                    loss = torch.mean(-elbo_post) # this is the same as pi-vae loss calculation
+                    loss = torch.mean(-elbo_post)
                 elif fix_alpha == 1.0:
-                    loss = torch.mean(-elbo_encoded) # I don't understand the encoded thing
+                    loss = torch.mean(-elbo_encoded)
                 else:
-                    # definitely need to understand this part as a key feature of ci-ivae
                     ratio_z_over_post_with_post_sample = torch.exp(log_z_density_with_post_sample-log_post_density_with_post_sample)
                     ratio_post_over_z_with_z_sample = torch.exp(log_post_density_with_z_sample-log_z_density_with_z_sample)
                     skew_kl_post = torch.log(1.0/(fix_alpha*ratio_z_over_post_with_post_sample+(1.0-fix_alpha)))
@@ -277,8 +278,8 @@ def fit(model, dataloader_dict,
                     loss[:, i] = -alpha*elbo_encoded-(1.0-alpha)*elbo_post+alpha*skew_kl_encoded+(1.0-alpha)*skew_kl_post
                     i += 1
                 loss, _ = torch.min(loss, dim = 1)
-            loss = torch.mean(loss) # that being said isn't this wrong? why mean twice?
-
+            loss = torch.mean(loss)
+            #print("train loss", loss)
             # backward step
             loss.backward()
 
@@ -292,39 +293,50 @@ def fit(model, dataloader_dict,
             loss_cumsum, sample_size = 0.0, 0
             obs_loglik_post_cumsum, kl_post_prior_cumsum = 0.0, 0.0
             obs_loglik_encoded_cumsum, kl_encoded_prior_cumsum = 0.0, 0.0
+            #maggie = 0
             for x_batch, u_batch in tqdm.tqdm(dataloader_dict[datasetname],
                                          desc='[Epoch %d/%d] Computing loss terms on %s' % (epoch, num_epoch, datasetname)):
-                if device == 'cuda':
-                    x_batch, u_batch = x_batch.cuda(), u_batch.cuda()
+                
+                #if maggie == 10:
+                #  break
+                #else:
+                #  maggie += 1
+
+                x_batch, u_batch = x_batch.to(device), u_batch.to(device)
 
                 # forward step
                 lam_mean, lam_log_var = prior(u_batch)
-                z_mean, z_log_var = encoder(x_batch)
+                
+                #print('x_batch', x_batch.shape)
+                x_batch_reshape = torch.transpose(x_batch, 1, 2) # idk maybe this reshaping shouldn't happen
+                x_batch_fire_rate = torch.squeeze(UTIL.gaussian_conv(x_batch_reshape, sigma, device=device))
+                z_mean, z_log_var = encoder(x_batch_fire_rate)
+                
+                z_mean = torch.squeeze(z_mean)
+                z_log_var = torch.squeeze(z_log_var)
+
                 post_mean, post_log_var = UTIL.compute_posterior(z_mean, z_log_var, lam_mean, lam_log_var)
                 post_sample = UTIL.sampling(post_mean, post_log_var)
                 encoded_sample = UTIL.sampling(z_mean, z_log_var)
 
                 epsilon = torch.randn((z_mean.shape[0], z_mean.shape[1], M))
-                if device == 'cuda':
-                    post_sample = post_sample.cuda()
-                    encoded_sample = encoded_sample.cuda()
-                    epsilon = epsilon.cuda()
+                #if device == 'cuda':
+                # TODO this is not efficient at all
+                post_sample = post_sample.to(device)
+                encoded_sample = encoded_sample.to(device)
+                epsilon = epsilon.to(device)
 
-                fire_rate_post, obs_log_var = decoder(post_sample)
-                fire_rate_encoded, _ = decoder(encoded_sample)
-
-                # compute objective function
-                obs_loglik_post = -torch.mean((fire_rate_post - x_batch)**2, dim=1)
-                obs_loglik_encoded = -torch.mean((fire_rate_encoded - x_batch)**2, dim=1)
+                fire_rate_post= decoder(post_sample) # torch.clip(decoder(post_sample), min_value=1e-7, max_value=1e7)
+                fire_rate_encoded = decoder(encoded_sample) #torch.clip(decoder(encoded_sample) #, min_value=1e-7, max_value=1-1e-7)
                 
-                obs_loglik_encoded = torch.mean(obs_loglik_encoded, dim=1)
-                obs_loglik_post = torch.mean(obs_loglik_post, dim=1)
-
+                obs_loglik_post = -torch.mean((fire_rate_post - x_batch_fire_rate)**2, dim=1)
+                obs_loglik_encoded = -torch.mean((fire_rate_encoded - x_batch_fire_rate)**2, dim=1)
+                
                 kl_post_prior = UTIL.kl_criterion(post_mean, post_log_var, lam_mean, lam_log_var)
                 kl_encoded_prior = UTIL.kl_criterion(z_mean, z_log_var, lam_mean, lam_log_var)
-
-                elbo_pi_vae = obs_loglik_post - beta_kl_post_prior*kl_post_prior
-                elbo_vae = obs_loglik_encoded - beta_kl_encoded_prior*kl_encoded_prior
+                
+                elbo_post = obs_loglik_post - beta_kl_post_prior*kl_post_prior
+                elbo_encoded = obs_loglik_encoded - beta_kl_encoded_prior*kl_encoded_prior
 
                 z_mean_tiled = torch.tile(torch.unsqueeze(z_mean, 2), [1, 1, M])
                 z_log_var_tiled = torch.tile(torch.unsqueeze(z_log_var, 2), [1, 1, M])
@@ -366,7 +378,7 @@ def fit(model, dataloader_dict,
                         loss[:, i] = -alpha*elbo_encoded-(1.0-alpha)*elbo_post+alpha*skew_kl_encoded+(1.0-alpha)*skew_kl_post
                         i += 1
                     loss, _ = torch.min(loss, dim = 1)
-                loss = torch.mean(loss)
+                loss = torch.mean(loss) # that being said isn't this wrong? why mean twice?
                 
                 loss_cumsum += loss.item()*np.shape(x_batch)[0]
                 obs_loglik_post_cumsum += torch.mean(obs_loglik_post).item()*np.shape(x_batch)[0]
@@ -380,6 +392,7 @@ def fit(model, dataloader_dict,
                 for name, m in networks.named_parameters():
                     if 'weight' in name:
                         l2_penalty += 0.5*torch.sum(m**2)
+            #print("appending val loss")
             logs[datasetname]['loss'].append(loss_cumsum/sample_size)
             logs[datasetname]['recon_loss_post'].append(-obs_loglik_post_cumsum/sample_size)
             logs[datasetname]['kl_post_prior'].append(kl_post_prior_cumsum/sample_size)
@@ -402,9 +415,13 @@ def fit(model, dataloader_dict,
         
         # update models and logs if the best validation loss is updated
         current_val_loss = logs['val']['loss'][-1]
+        print('epoch', epoch)
         best_val_loss = current_val_loss if epoch == 1 else np.minimum(best_val_loss, current_val_loss)
+        print('current_val_loss', current_val_loss)
+        print('best_val_loss', best_val_loss)
         if best_val_loss == current_val_loss:
             # update model and logs
+            #print("yes")
             best_val_epoch = epoch
             os.makedirs('%s/' % result_path, exist_ok=True)
             torch.save({'prior': prior,
@@ -492,67 +509,45 @@ class Prior_conti(nn.Module):
                 h_log_var = self.log_var_net[i+1](h_log_var)
 
         return h_mu, h_log_var
-
     
-class Encoder(nn.Module):
-    def __init__(self, dim_x, dim_z, encoder_node_list):
-        super(Encoder, self).__init__()
-        
-        self.dim_x, self.dim_z = dim_x, dim_z
-        self.encoder_node_list = encoder_node_list # hidden dims
-        
-        self.main = nn.ModuleList()
-        
-        # input dimension is dim_x
-        self.main.append(nn.Linear(self.dim_x, self.encoder_node_list[0]))
-        self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
-        
-        if len(self.encoder_node_list) > 1:
-            for i in range(len(self.encoder_node_list)-1):
-                self.main.append(nn.Linear(self.encoder_node_list[i],
-                                          self.encoder_node_list[i+1]))
-                self.main.append(nn.LeakyReLU(negative_slope=0.2, inplace=True))
 
-        # input dimension is gen_nodes
-        self.mu_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
-        self.log_var_net = nn.Linear(self.encoder_node_list[-1], self.dim_z)
-    
-    def forward(self, x_input):
-        h = self.main[0](x_input)
-        
-        if len(self.main) > 1:
-            for i in range(len(self.main)-1):
-                h = self.main[i+1](h)
-
-        mu, log_var = self.mu_net(h), self.log_var_net(h)
-        
-        return mu, log_var
-    
 # receptive field of 10 samples
 # For the model with receptive field of 10, a convolutional network with five time convolutional layers was used. The first layer had kernel size 2, the next three layers had kernel size 3 and used skip connections. The final layer had kernel size 3 and mapped the hidden dimensions to the output dimension.
 
 # so input is of size (10, 120); output of (2,) each
 # how does that get rid of the 10
-class CebraConvEncoder(nn.Module):
+class ConvEncoder(nn.Module):
     def __init__(self, dim_x, dim_z, time_window, hid_dim=60):
         super(CebraConvEncoder, self).__init__()
         self.dim_x, self.dim_z = dim_x, dim_z
-        self.hid_dim = hid_dim
+        #self.hid_dim = hid_dim
         self.window = time_window # need?
         
         self.conv1 = nn.Conv1d(
-            in_channels=dim_x, out_channels=hid_dim, kernel_size=2)#, padding='same')
+            in_channels=dim_x, out_channels=dim_x, kernel_size=2, padding='same')
         self.conv2 = nn.Conv1d(
-            in_channels=hid_dim, out_channels=hid_dim, kernel_size=3)#, padding='same')
+            in_channels=dim_x, out_channels=dim_x, kernel_size=3, padding='same')
         self.conv3 = nn.Conv1d(
-            in_channels=hid_dim, out_channels=hid_dim, kernel_size=3)#, padding='same')
-        self.conv4 = nn.Conv1d(
-            in_channels=hid_dim, out_channels=hid_dim, kernel_size=3)#, padding='same')
+            in_channels=dim_x, out_channels=dim_x, kernel_size=3, padding='same')
         
+        self.conv4 = nn.Conv1d(
+            in_channels=dim_x, out_channels=dim_x, kernel_size=3)#, padding='same')
+        
+        # have to decide if this will be a conv or linear layer
+        # is it basically a linear with kernel size 1 lol
         self.conv_mu = nn.Conv1d(
-            in_channels=hid_dim, out_channels=dim_z, kernel_size=3)#, padding='same')
+            in_channels=dim_x, out_channels=dim_z, kernel_size=1, padding='same')
         self.conv_log_var = nn.Conv1d(
-            in_channels=hid_dim, out_channels=dim_z, kernel_size=3)#, padding='same')
+            in_channels=dim_x, out_channels=dim_z, kernel_size=1, padding='same')
+        
+        
+        self.ff1 = nn.Linear(dim_x, hid_dim)
+        self.ff2 = nn.Linear(hid_dim, hid_dim)
+        self.ff3 = nn.Linear(hid_dim, hid_dim)
+        self.ff4 = nn.Linear(hid_dim, hid_dim)
+        
+        # self.conv_mu = nn.Linear(hid_dim, dim_z)
+        # self.conv_log_var
         
         # only use if not MSE
         #self.bn_mu = nn.BatchNorm1d(num_features=dim_z)
@@ -619,8 +614,6 @@ class Decoder(nn.Module):
             
         
         self.obs_log_var_net = nn.Linear(1, self.dim_x)
-        
-        self.conv = nn.ConvTranspose1d(1, 10, 1)
     
     def forward(self, z_input):
         h = self.main[0](z_input)
@@ -630,18 +623,5 @@ class Decoder(nn.Module):
                 h = self.main[i+1](h)
 
         o = self.mu_net(h)
-        #print('o', o.shape)
-        o = torch.unsqueeze(o, -2)
-        #print('unsqueezed o', o.shape)
-        o = self.conv(o)
-        #print('conv o', o.shape)
         
-        device = z_input.get_device()
-        if device == -1:
-            one_tensor = torch.ones((1,1))
-            obs_log_var = self.obs_log_var_net(one_tensor)
-            return o, obs_log_var
-        else:
-            one_tensor = torch.ones((1,1)).cuda()
-            obs_log_var = self.obs_log_var_net(one_tensor)
-            return o, obs_log_var
+        return o
